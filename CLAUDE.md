@@ -8,29 +8,47 @@ A real-time multiplayer 2D shooter game using Phaser.js (client) and FastAPI/Kaf
 
 ## Commands
 
-### Server (Python/FastAPI)
+Use the Makefile from the project root for common tasks:
+
+```bash
+make help             # Show all available commands
+
+# Setup
+make install          # Install all dependencies (server + client)
+
+# Run services (each in separate terminal)
+make run-server       # FastAPI WebSocket server (port 8000)
+make run-client       # Vite dev server (port 5173)
+make run-consumer     # Tail Kafka game-events topic
+
+# Kafka (macOS with Homebrew)
+make kafka-start      # Start Kafka in KRaft mode (foreground)
+make kafka-stop       # Stop Kafka
+make kafka-setup      # Create game-events topic
+make kafka-status     # Check if Kafka is running
+
+# Testing
+make test             # Run all server tests
+make lint             # Run ruff linter
+```
+
+### Manual Commands
+
+Server (Python/FastAPI):
 ```bash
 cd server
 poetry install                              # Install dependencies
 poetry run uvicorn app.main:app --reload    # Start server (http://localhost:8000)
 poetry run pytest -v                        # Run tests
-poetry run python -m services.analytics_service  # Optional: analytics consumer
-poetry run python -m services.replay_service     # Optional: replay consumer
+poetry run ruff check .                     # Lint code
 ```
 
-### Client (Phaser.js/Vite)
+Client (Phaser.js/Vite):
 ```bash
 cd client
 npm install           # Install dependencies
-npm run dev           # Start dev server (http://localhost:3000)
+npm run dev           # Start dev server (http://localhost:5173)
 npm run build         # Build for production
-```
-
-### Kafka (local setup)
-```bash
-brew services start zookeeper && brew services start kafka
-./infra/scripts/setup-kafka.sh    # Create game-events topic
-./infra/scripts/consume-events.sh # Tail events for debugging
 ```
 
 ## Architecture
