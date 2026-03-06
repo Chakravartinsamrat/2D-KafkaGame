@@ -1,0 +1,38 @@
+# Render Blueprint - Deploy both frontend and backend
+# https://render.com/docs/blueprint-spec
+
+services:
+  # Backend API (FastAPI)
+  - type: web
+    name: kafka-game-api
+    runtime: docker
+    dockerfilePath: ./server/Dockerfile
+    dockerContext: ./server
+    plan: free  # or starter ($7/mo) for always-on
+    healthCheckPath: /health
+    envVars:
+      - key: KAFKA_ENABLED
+        value: "false"  # Set to true and add Upstash credentials if needed
+      - key: KAFKA_BOOTSTRAP_SERVERS
+        sync: false  # Set manually in dashboard
+      - key: KAFKA_SASL_USERNAME
+        sync: false
+      - key: KAFKA_SASL_PASSWORD
+        sync: false
+      - key: ALLOWED_ORIGINS
+        value: "https://your-frontend.vercel.app"
+
+  # Frontend (Static Site) - Optional, can use Vercel instead
+  - type: web
+    name: kafka-game-client
+    runtime: static
+    buildCommand: cd client && npm install && npm run build
+    staticPublishPath: ./client/dist
+    plan: free
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: public, max-age=31536000
+    envVars:
+      - key: VITE_WS_URL
+        value: "wss://kafka-game-api.onrender.com/ws"

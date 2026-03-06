@@ -4,8 +4,13 @@ import { Bullet } from '../entities/Bullet';
 import { HUD } from '../ui/HUD';
 import { WebSocketClient } from '../network/WebSocketClient';
 import { AnyEvent, GameStateEvent, MatchEndedEvent, PlayerKilledEvent, PlayerState, ShootEvent } from '../types';
+import { MAP_OBSTACLES, DEBUG_OBSTACLES } from '../config/MapConfig';
 
 const WS_URL = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8000/ws';
+
+// Movement speeds
+const WALK_SPEED = 120;
+const RUN_SPEED = 220;
 
 /**
  * GameScene — the main gameplay scene.
@@ -26,6 +31,9 @@ export class GameScene extends Phaser.Scene {
   // Bullet group (object pool)
   private bullets!: Phaser.Physics.Arcade.Group;
 
+  // Obstacles group
+  private obstacles!: Phaser.Physics.Arcade.StaticGroup;
+
   // Input
   private wasd!: {
     up: Phaser.Input.Keyboard.Key;
@@ -33,6 +41,7 @@ export class GameScene extends Phaser.Scene {
     left: Phaser.Input.Keyboard.Key;
     right: Phaser.Input.Keyboard.Key;
   };
+  private shiftKey!: Phaser.Input.Keyboard.Key;
 
   // HUD overlay
   private hud!: HUD;
@@ -40,7 +49,7 @@ export class GameScene extends Phaser.Scene {
   // Network
   private wsClient!: WebSocketClient;
   private localPlayerId!: string;
-  private matchId: string | null = null;
+  private _matchId: string | null = null;
 
   // Rate-limit MOVE events (send at most every 50 ms)
   private lastMoveSent = 0;
@@ -56,29 +65,75 @@ export class GameScene extends Phaser.Scene {
   // Current players for scoreboard
   private currentPlayers: Record<string, PlayerState> = {};
 
+  // Coordinate display for debugging
+  private coordsText!: Phaser.GameObjects.Text;
+
+  // World dimensions (must match server and map)
+  private static readonly WORLD_WIDTH = 1920;
+  private static readonly WORLD_HEIGHT = 1088;
+
   constructor() {
     super({ key: 'GameScene' });
   }
 
   init(data: { matchId?: string; playerId?: string }): void {
-    this.matchId = data.matchId ?? null;
+    this._matchId = data.matchId ?? null;
     this.localPlayerId = data.playerId ?? crypto.randomUUID();
   }
 
   // ─── Lifecycle ────────────────────────────────────────────────────────────
 
   preload(): void {
-    // Generate placeholder textures programmatically — no asset files needed
+    // Load the map image
+    this.load.image('map', 'assets/Latest map.png');
+
+    // Load character sprites
+    this.loadCharacterSprites();
+
+    // Generate placeholder textures programmatically
     this.generateTextures();
   }
 
-  create(): void {
-    // World background grid
-    this.createWorldBackground();
+  private loadCharacterSprites(): void {
+    const basePath = 'assets/avatar_sprite';
 
-    // Physics world bounds
-    this.physics.world.setBounds(0, 0, 2560, 1440);
-    this.cameras.main.setBounds(0, 0, 2560, 1440);
+    // Idle frames
+    for (let i = 1; i <= 2; i++) {
+      this.load.image(`idle${i}`, `${basePath}/idle/idle0${i}.png`);
+    }
+
+    // Running frames
+    for (let i = 1; i <= 8; i++) {
+      this.load.image(`run${i}`, `${basePath}/running/run${i}.png`);
+    }
+
+    // Shooting frames
+    for (let i = 1; i <= 4; i++) {
+      this.load.image(`shoot1_${i}`, `${basePath}/shooting/shooting1.0${i}.png`);
+      this.load.image(`shoot2_${i}`, `${basePath}/shooting/shooting2.0${i}.png`);
+    }
+
+    // Dead frames
+    for (let i = 1; i <= 11; i++) {
+      const num = i < 10 ? `0${i}` : `${i}`;
+      this.load.image(`dead${i}`, `${basePath}/dead/dead${num}.png`);
+    }
+
+    // Damage frames
+    for (let i = 1; i <= 5; i++) {
+      this.load.image(`damage${i}`, `${basePath}/damage/damage0${i}.png`);
+    }
+  }
+
+  create(): void {
+    // Add map as background (centered at origin)
+    const map = this.add.image(0, 0, 'map');
+    map.setOrigin(0, 0);
+    map.setDepth(-1);
+
+    // Physics world bounds (match map size)
+    this.physics.world.setBounds(0, 0, GameScene.WORLD_WIDTH, GameScene.WORLD_HEIGHT);
+    this.cameras.main.setBounds(0, 0, GameScene.WORLD_WIDTH, GameScene.WORLD_HEIGHT);
 
     // Input
     if (this.input.keyboard) {
@@ -88,7 +143,11 @@ export class GameScene extends Phaser.Scene {
         left: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.A),
         right: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.D),
       };
+      this.shiftKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
     }
+
+    // Create obstacles from config
+    this.createObstacles();
 
     // Bullet group (pool of 60)
     this.bullets = this.physics.add.group({
@@ -97,12 +156,34 @@ export class GameScene extends Phaser.Scene {
       runChildUpdate: true,
     });
 
+    // Create animations
+    this.createAnimations();
+
     // Local player (spawns at centre of world)
-    this.localPlayer = new Player(this, 1280, 720, this.localPlayerId, true);
+    this.localPlayer = new Player(this, GameScene.WORLD_WIDTH / 2, GameScene.WORLD_HEIGHT / 2, this.localPlayerId, true);
     this.cameras.main.startFollow(this.localPlayer, true, 0.1, 0.1);
+
+    // Set up collisions
+    this.physics.add.collider(this.localPlayer, this.obstacles);
+    this.physics.add.collider(this.bullets, this.obstacles, (bullet) => {
+      (bullet as Bullet).setActive(false);
+      (bullet as Bullet).setVisible(false);
+    });
 
     // HUD
     this.hud = new HUD(this);
+
+    // Coordinates display (top right corner)
+    this.coordsText = this.add
+      .text(this.scale.width - 10, 10, 'X: 0  Y: 0', {
+        fontSize: '14px',
+        color: '#00ff00',
+        backgroundColor: '#000000aa',
+        padding: { x: 8, y: 4 },
+      })
+      .setOrigin(1, 0)
+      .setScrollFactor(0)
+      .setDepth(100);
 
     // Mouse click → shoot
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
@@ -131,9 +212,11 @@ export class GameScene extends Phaser.Scene {
 
     // Instructions overlay
     this.add
-      .text(this.scale.width / 2, this.scale.height - 20, 'WASD: Move  |  Mouse: Aim & Shoot  |  TAB: Scoreboard  |  ESC: Menu', {
+      .text(this.scale.width / 2, this.scale.height - 20, 'WASD: Move  |  SHIFT: Run  |  Mouse: Aim & Shoot  |  TAB: Scoreboard  |  ESC: Menu', {
         fontSize: '13px',
-        color: '#555577',
+        color: '#aaaacc',
+        backgroundColor: '#00000088',
+        padding: { x: 8, y: 4 },
       })
       .setOrigin(0.5)
       .setScrollFactor(0)
@@ -149,12 +232,17 @@ export class GameScene extends Phaser.Scene {
 
     // Sync decorators for remote players
     this.remotePlayers.forEach((p) => p.syncDecorators());
+
+    // Update coordinate display
+    this.coordsText.setText(`X: ${Math.round(this.localPlayer.x)}  Y: ${Math.round(this.localPlayer.y)}`);
   }
 
   // ─── Input Handlers ───────────────────────────────────────────────────────
 
   private handleMovement(time: number, delta: number): void {
-    const speed = 200;
+    // Check if running (shift held)
+    const isRunning = this.shiftKey?.isDown ?? false;
+    const speed = isRunning ? RUN_SPEED : WALK_SPEED;
     const body = this.localPlayer.body as Phaser.Physics.Arcade.Body;
 
     let vx = 0;
@@ -165,6 +253,9 @@ export class GameScene extends Phaser.Scene {
 
     if (this.wasd.up.isDown) vy = -speed;
     else if (this.wasd.down.isDown) vy = speed;
+
+    // Update player animation state
+    this.localPlayer.setMovementState(vx !== 0 || vy !== 0, isRunning);
 
     // Client prediction: apply movement immediately
     body.setVelocity(vx, vy);
@@ -203,7 +294,10 @@ export class GameScene extends Phaser.Scene {
       worldPointer.x,
       worldPointer.y,
     );
-    this.localPlayer.setRotation(angle);
+    // Don't rotate the sprite - instead flip based on facing direction
+    this.localPlayer.setFacingDirection(angle);
+    // Store angle for shooting (but don't visually rotate the sprite)
+    (this.localPlayer as any)._aimAngle = angle;
   }
 
   private shoot(pointer: Phaser.Input.Pointer): void {
@@ -221,6 +315,9 @@ export class GameScene extends Phaser.Scene {
     if (bullet) {
       bullet.fire(this.localPlayer.x, this.localPlayer.y, angle, this.localPlayerId);
       this.ammo = Math.max(0, this.ammo - 1);
+
+      // Play shoot animation
+      this.localPlayer.playShootAnimation();
 
       // Auto-reload after 3 seconds when empty
       if (this.ammo === 0) {
@@ -361,6 +458,8 @@ export class GameScene extends Phaser.Scene {
         // New remote player
         const rp = new Player(this, ps.x, ps.y, id, false);
         this.remotePlayers.set(id, rp);
+        // Add collision with obstacles
+        this.physics.add.collider(rp, this.obstacles);
       }
 
       const rp = this.remotePlayers.get(id)!;
@@ -370,7 +469,7 @@ export class GameScene extends Phaser.Scene {
           rp.respawn(ps.x, ps.y);
         }
         rp.setPosition(ps.x, ps.y);
-        rp.setRotation(ps.angle);
+        rp.setFacingDirection(ps.angle);
         rp.health = ps.health;
       } else if (rp.alive) {
         rp.die();
@@ -400,8 +499,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   private respawn(): void {
-    const x = Phaser.Math.Between(200, 2360);
-    const y = Phaser.Math.Between(200, 1240);
+    const x = Phaser.Math.Between(200, GameScene.WORLD_WIDTH - 200);
+    const y = Phaser.Math.Between(200, GameScene.WORLD_HEIGHT - 200);
     this.localPlayer.respawn(x, y);
     this.ammo = this.maxAmmo;
 
@@ -446,15 +545,93 @@ export class GameScene extends Phaser.Scene {
     gfx3.destroy();
   }
 
-  private createWorldBackground(): void {
-    // Draw a grid to give a sense of space
-    const gfx = this.add.graphics();
-    gfx.lineStyle(1, 0x222244, 0.6);
-    for (let x = 0; x < 2560; x += 80) {
-      gfx.lineBetween(x, 0, x, 1440);
+  private createObstacles(): void {
+    this.obstacles = this.physics.add.staticGroup();
+
+    MAP_OBSTACLES.forEach((obs) => {
+      // Create invisible collision rectangle
+      const rect = this.add.rectangle(
+        obs.x + obs.width / 2,
+        obs.y + obs.height / 2,
+        obs.width,
+        obs.height,
+        DEBUG_OBSTACLES ? 0xff0000 : 0x000000,
+        DEBUG_OBSTACLES ? 0.3 : 0
+      );
+
+      // Add debug border if enabled
+      if (DEBUG_OBSTACLES) {
+        rect.setStrokeStyle(2, 0xff0000, 0.8);
+      }
+
+      this.obstacles.add(rect);
+      this.physics.add.existing(rect, true); // true = static body
+    });
+  }
+
+  private createAnimations(): void {
+    // Idle animation
+    if (!this.anims.exists('player_idle')) {
+      this.anims.create({
+        key: 'player_idle',
+        frames: [{ key: 'idle1' }, { key: 'idle2' }],
+        frameRate: 4,
+        repeat: -1,
+      });
     }
-    for (let y = 0; y < 1440; y += 80) {
-      gfx.lineBetween(0, y, 2560, y);
+
+    // Run animation
+    if (!this.anims.exists('player_run')) {
+      this.anims.create({
+        key: 'player_run',
+        frames: [
+          { key: 'run1' }, { key: 'run2' }, { key: 'run3' }, { key: 'run4' },
+          { key: 'run5' }, { key: 'run6' }, { key: 'run7' }, { key: 'run8' },
+        ],
+        frameRate: 12,
+        repeat: -1,
+      });
+    }
+
+    // Shoot animation
+    if (!this.anims.exists('player_shoot')) {
+      this.anims.create({
+        key: 'player_shoot',
+        frames: [
+          { key: 'shoot1_1' }, { key: 'shoot1_2' }, { key: 'shoot1_3' }, { key: 'shoot1_4' },
+          { key: 'shoot2_1' }, { key: 'shoot2_2' }, { key: 'shoot2_3' }, { key: 'shoot2_4' },
+        ],
+        frameRate: 16,
+        repeat: 0,
+      });
+    }
+
+    // Dead animation
+    if (!this.anims.exists('player_dead')) {
+      this.anims.create({
+        key: 'player_dead',
+        frames: [
+          { key: 'dead1' }, { key: 'dead2' }, { key: 'dead3' }, { key: 'dead4' },
+          { key: 'dead5' }, { key: 'dead6' }, { key: 'dead7' }, { key: 'dead8' },
+          { key: 'dead9' }, { key: 'dead10' }, { key: 'dead11' },
+        ],
+        frameRate: 12,
+        repeat: 0,
+      });
+    }
+
+    // Damage animation
+    if (!this.anims.exists('player_damage')) {
+      this.anims.create({
+        key: 'player_damage',
+        frames: [
+          { key: 'damage1' }, { key: 'damage2' }, { key: 'damage3' },
+          { key: 'damage4' }, { key: 'damage5' },
+        ],
+        frameRate: 10,
+        repeat: 0,
+      });
     }
   }
+
 }

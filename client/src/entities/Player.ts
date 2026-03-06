@@ -13,6 +13,12 @@ export class Player extends Phaser.Physics.Arcade.Sprite {
   public alive: boolean;
   public isLocal: boolean;
 
+  // Animation state
+  private isMoving: boolean = false;
+  private isRunning: boolean = false;
+  private isShooting: boolean = false;
+  private facingRight: boolean = true;
+
   // Health bar graphics drawn above the player
   private healthBarBg: Phaser.GameObjects.Graphics;
   private healthBarFill: Phaser.GameObjects.Graphics;
@@ -25,8 +31,8 @@ export class Player extends Phaser.Physics.Arcade.Sprite {
     playerId: string,
     isLocal: boolean = false,
   ) {
-    // Use a generated texture since we have no asset files
-    super(scene, x, y, isLocal ? 'player_local' : 'player_remote');
+    // Start with idle frame (use sprite animation)
+    super(scene, x, y, 'idle1');
 
     this.playerId = playerId;
     this.health = 100;
@@ -41,6 +47,14 @@ export class Player extends Phaser.Physics.Arcade.Sprite {
     this.setCollideWorldBounds(true);
     this.setDepth(5);
 
+    // Scale sprite (40x40 is small, scale up a bit)
+    this.setScale(1.2);
+
+    // Set smaller hitbox for better collision
+    const body = this.body as Phaser.Physics.Arcade.Body;
+    body.setSize(24, 32);
+    body.setOffset(8, 8);
+
     // Health bar background
     this.healthBarBg = scene.add.graphics();
     this.healthBarBg.setDepth(6);
@@ -51,9 +65,9 @@ export class Player extends Phaser.Physics.Arcade.Sprite {
 
     // Player name label
     const displayName = isLocal ? 'You' : playerId.substring(0, 6);
-    this.nameLabel = scene.add.text(x, y - 36, displayName, {
+    this.nameLabel = scene.add.text(x, y - 48, displayName, {
       fontSize: '11px',
-      color: isLocal ? '#00ff88' : '#ffffff',
+      color: isLocal ? '#00ff88' : '#ff6666',
       fontStyle: 'bold',
       stroke: '#000000',
       strokeThickness: 2,
@@ -62,6 +76,57 @@ export class Player extends Phaser.Physics.Arcade.Sprite {
     this.nameLabel.setDepth(8);
 
     this.drawHealthBar();
+
+    // Start idle animation
+    this.playAnimation('idle');
+  }
+
+  setMovementState(moving: boolean, running: boolean): void {
+    this.isMoving = moving;
+    this.isRunning = running;
+
+    if (!this.alive) return;
+
+    if (this.isShooting) return; // Don't interrupt shooting
+
+    if (moving) {
+      this.playAnimation('run');
+    } else {
+      this.playAnimation('idle');
+    }
+  }
+
+  setFacingDirection(angle: number): void {
+    // Determine facing direction from angle
+    // angle 0 = right, PI = left
+    const shouldFaceRight = Math.cos(angle) >= 0;
+
+    if (shouldFaceRight !== this.facingRight) {
+      this.facingRight = shouldFaceRight;
+      this.setFlipX(!shouldFaceRight);
+    }
+  }
+
+  playShootAnimation(): void {
+    if (!this.alive) return;
+    this.isShooting = true;
+    this.play('player_shoot');
+    this.once('animationcomplete', () => {
+      this.isShooting = false;
+      // Return to appropriate animation
+      if (this.isMoving) {
+        this.playAnimation('run');
+      } else {
+        this.playAnimation('idle');
+      }
+    });
+  }
+
+  private playAnimation(type: 'idle' | 'run' | 'shoot' | 'dead' | 'damage'): void {
+    const animKey = `player_${type}`;
+    if (this.anims.currentAnim?.key !== animKey) {
+      this.play(animKey, true);
+    }
   }
 
   takeDamage(amount: number): void {
@@ -79,10 +144,15 @@ export class Player extends Phaser.Physics.Arcade.Sprite {
 
   die(): void {
     this.alive = false;
-    this.setVisible(false);
     this.healthBarBg.setVisible(false);
     this.healthBarFill.setVisible(false);
     this.nameLabel.setVisible(false);
+
+    // Play death animation
+    this.playAnimation('dead');
+    this.once('animationcomplete', () => {
+      this.setVisible(false);
+    });
 
     // Death effect
     if (this.scene) {
@@ -100,12 +170,18 @@ export class Player extends Phaser.Physics.Arcade.Sprite {
   respawn(x: number, y: number): void {
     this.alive = true;
     this.health = this.maxHealth;
+    this.isMoving = false;
+    this.isRunning = false;
+    this.isShooting = false;
     this.setPosition(x, y);
     this.setVisible(true);
     this.healthBarBg.setVisible(true);
     this.healthBarFill.setVisible(true);
     this.nameLabel.setVisible(true);
     this.drawHealthBar();
+
+    // Start idle animation
+    this.playAnimation('idle');
 
     // Spawn effect
     if (this.scene) {
@@ -130,7 +206,7 @@ export class Player extends Phaser.Physics.Arcade.Sprite {
     const barWidth = 40;
     const barHeight = 5;
     const x = this.x - barWidth / 2;
-    const y = this.y - 26;
+    const y = this.y - 34;  // More padding from sprite head
     const fillWidth = (this.health / this.maxHealth) * barWidth;
 
     // Background with border
@@ -163,7 +239,7 @@ export class Player extends Phaser.Physics.Arcade.Sprite {
   syncDecorators(): void {
     if (!this.alive) return;
     this.drawHealthBar();
-    this.nameLabel.setPosition(this.x, this.y - 36);
+    this.nameLabel.setPosition(this.x, this.y - 44);
   }
 
   destroy(fromScene?: boolean): void {
