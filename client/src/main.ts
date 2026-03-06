@@ -6,10 +6,14 @@ import { GameScene } from './scenes/GameScene';
 // Game configuration
 const config: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
-  width: 1280,
-  height: 720,
   parent: 'game-container',
   backgroundColor: '#1a1a2e',
+  scale: {
+    mode: Phaser.Scale.RESIZE,  // Automatically resize to fill window
+    width: '100%',
+    height: '100%',
+    autoCenter: Phaser.Scale.CENTER_BOTH,
+  },
   physics: {
     default: 'arcade',
     arcade: {

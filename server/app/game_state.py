@@ -29,9 +29,9 @@ from app.event_models import (
     ShootEvent,
 )
 
-# World dimensions must match the client constants
-WORLD_WIDTH = 2560
-WORLD_HEIGHT = 1440
+# World dimensions must match the client constants and map size
+WORLD_WIDTH = 1920
+WORLD_HEIGHT = 1088
 BULLET_DAMAGE = 25
 MAX_HEALTH = 100
 
