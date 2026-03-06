@@ -8,8 +8,8 @@ FROM python:3.11-slim as builder
 
 WORKDIR /app
 
-# Install poetry
-RUN pip install --no-cache-dir poetry==1.7.1
+# Install poetry (1.8+ required for package-mode)
+RUN pip install --no-cache-dir poetry==1.8.5
 
 # Copy dependency files
 COPY pyproject.toml poetry.lock ./
