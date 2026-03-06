@@ -1,0 +1,17 @@
+{
+  "name": "2d-kafka-game-client",
+  "version": "1.0.0",
+  "description": "Phaser.js multiplayer 2D shooter client",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "phaser": "^3.60.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3",
+    "vite": "^5.0.12"
+  }
+}

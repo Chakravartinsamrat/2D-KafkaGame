@@ -1,0 +1,16 @@
+# Node / client
+client/node_modules/
+client/dist/
+
+# Python / server
+server/.venv/
+server/__pycache__/
+server/**/__pycache__/
+server/**/*.pyc
+server/.pytest_cache/
+server/.mypy_cache/
+server/replays/
+
+# General
+.DS_Store
+*.log
