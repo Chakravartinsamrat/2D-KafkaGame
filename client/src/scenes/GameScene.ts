@@ -3,10 +3,8 @@ import { Player } from '../entities/Player';
 import { Bullet } from '../entities/Bullet';
 import { HUD } from '../ui/HUD';
 import { WebSocketClient } from '../network/WebSocketClient';
-import { AnyEvent, GameStateEvent, PlayerState } from '../types';
+import { AnyEvent, GameStateEvent, MatchEndedEvent, PlayerKilledEvent, PlayerState, ShootEvent } from '../types';
 
-// Generate a unique player ID for this session
-const LOCAL_PLAYER_ID = crypto.randomUUID();
 const WS_URL = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8000/ws';
 
 /**
@@ -41,16 +39,30 @@ export class GameScene extends Phaser.Scene {
 
   // Network
   private wsClient!: WebSocketClient;
+  private localPlayerId!: string;
+  private matchId: string | null = null;
 
   // Rate-limit MOVE events (send at most every 50 ms)
   private lastMoveSent = 0;
+
+  // Client prediction state
+  private inputSeq = 0;
+  private pendingInputs: Array<{ seq: number; vx: number; vy: number; dt: number }> = [];
 
   // Ammo
   private ammo = 30;
   private maxAmmo = 30;
 
+  // Current players for scoreboard
+  private currentPlayers: Record<string, PlayerState> = {};
+
   constructor() {
     super({ key: 'GameScene' });
+  }
+
+  init(data: { matchId?: string; playerId?: string }): void {
+    this.matchId = data.matchId ?? null;
+    this.localPlayerId = data.playerId ?? crypto.randomUUID();
   }
 
   // ─── Lifecycle ────────────────────────────────────────────────────────────
@@ -86,7 +98,7 @@ export class GameScene extends Phaser.Scene {
     });
 
     // Local player (spawns at centre of world)
-    this.localPlayer = new Player(this, 1280, 720, LOCAL_PLAYER_ID, true);
+    this.localPlayer = new Player(this, 1280, 720, this.localPlayerId, true);
     this.cameras.main.startFollow(this.localPlayer, true, 0.1, 0.1);
 
     // HUD
@@ -100,7 +112,7 @@ export class GameScene extends Phaser.Scene {
     });
 
     // WebSocket
-    this.wsClient = new WebSocketClient(WS_URL, LOCAL_PLAYER_ID);
+    this.wsClient = new WebSocketClient(WS_URL, this.localPlayerId);
     this.wsClient.onMessage((event) => this.handleServerEvent(event));
     this.wsClient.connect();
 
@@ -110,11 +122,16 @@ export class GameScene extends Phaser.Scene {
         this.wsClient.disconnect();
         this.scene.start('MenuScene');
       });
+
+      // Scoreboard toggle (Tab)
+      this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.TAB).on('down', () => {
+        this.hud.toggleScoreboard(this.currentPlayers, this.localPlayerId);
+      });
     }
 
     // Instructions overlay
     this.add
-      .text(this.scale.width / 2, this.scale.height - 20, 'WASD: Move  |  Mouse: Aim & Shoot  |  ESC: Menu', {
+      .text(this.scale.width / 2, this.scale.height - 20, 'WASD: Move  |  Mouse: Aim & Shoot  |  TAB: Scoreboard  |  ESC: Menu', {
         fontSize: '13px',
         color: '#555577',
       })
@@ -136,7 +153,7 @@ export class GameScene extends Phaser.Scene {
 
   // ─── Input Handlers ───────────────────────────────────────────────────────
 
-  private handleMovement(time: number, _delta: number): void {
+  private handleMovement(time: number, delta: number): void {
     const speed = 200;
     const body = this.localPlayer.body as Phaser.Physics.Arcade.Body;
 
@@ -149,15 +166,24 @@ export class GameScene extends Phaser.Scene {
     if (this.wasd.up.isDown) vy = -speed;
     else if (this.wasd.down.isDown) vy = speed;
 
+    // Client prediction: apply movement immediately
     body.setVelocity(vx, vy);
 
-    // Rate-limited MOVE event
+    // Rate-limited MOVE event with sequence number
     const moving = vx !== 0 || vy !== 0;
     if (moving && time - this.lastMoveSent > 50) {
       this.lastMoveSent = time;
+      this.inputSeq++;
+      const dt = delta / 1000; // Convert to seconds
+
+      // Store pending input for reconciliation
+      this.pendingInputs.push({ seq: this.inputSeq, vx, vy, dt });
+
+      // Send to server with sequence number
       this.wsClient.send({
         type: 'MOVE',
-        playerId: LOCAL_PLAYER_ID,
+        playerId: this.localPlayerId,
+        seq: this.inputSeq,
         x: this.localPlayer.x,
         y: this.localPlayer.y,
         velocityX: vx,
@@ -193,7 +219,7 @@ export class GameScene extends Phaser.Scene {
 
     const bullet = this.bullets.get() as Bullet | null;
     if (bullet) {
-      bullet.fire(this.localPlayer.x, this.localPlayer.y, angle, LOCAL_PLAYER_ID);
+      bullet.fire(this.localPlayer.x, this.localPlayer.y, angle, this.localPlayerId);
       this.ammo = Math.max(0, this.ammo - 1);
 
       // Auto-reload after 3 seconds when empty
@@ -206,7 +232,7 @@ export class GameScene extends Phaser.Scene {
       // Send SHOOT event to server → Kafka
       this.wsClient.send({
         type: 'SHOOT',
-        playerId: LOCAL_PLAYER_ID,
+        playerId: this.localPlayerId,
         x: this.localPlayer.x,
         y: this.localPlayer.y,
         angle,
@@ -220,18 +246,89 @@ export class GameScene extends Phaser.Scene {
   private handleServerEvent(event: AnyEvent | GameStateEvent): void {
     if (event.type === 'GAME_STATE') {
       this.applyGameState(event as GameStateEvent);
+    } else if (event.type === 'SHOOT') {
+      // Render bullet from remote player
+      this.handleRemoteShoot(event as ShootEvent);
+    } else if (event.type === 'MATCH_ENDED') {
+      this.handleMatchEnded(event as MatchEndedEvent);
+    } else if (event.type === 'PLAYER_KILLED') {
+      this.handlePlayerKilled(event as PlayerKilledEvent);
+    }
+  }
+
+  private handlePlayerKilled(event: PlayerKilledEvent): void {
+    const killerName = event.killedBy
+      ? event.killedBy === this.localPlayerId
+        ? 'You'
+        : event.killedBy.substring(0, 6)
+      : 'Unknown';
+    const victimName = event.playerId === this.localPlayerId ? 'You' : event.playerId.substring(0, 6);
+    this.hud.addKillFeedItem(killerName, victimName);
+  }
+
+  private handleMatchEnded(event: MatchEndedEvent): void {
+    // Show match results
+    const { width, height } = this.scale;
+
+    // Overlay
+    this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.7).setScrollFactor(0).setDepth(100);
+
+    // Results text
+    const myScore = event.scores[this.localPlayerId] ?? 0;
+    const winner = event.winnerId === this.localPlayerId ? 'You Win!' : 'Match Over';
+
+    this.add
+      .text(width / 2, height * 0.3, winner, {
+        fontSize: '48px',
+        color: '#e94560',
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(101);
+
+    this.add
+      .text(width / 2, height * 0.45, `Your Kills: ${myScore}`, {
+        fontSize: '24px',
+        color: '#ffffff',
+      })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(101);
+
+    // Return to menu after delay
+    this.time.delayedCall(5000, () => {
+      this.wsClient.disconnect();
+      this.scene.start('MenuScene');
+    });
+  }
+
+  private handleRemoteShoot(event: ShootEvent): void {
+    // Don't render our own bullets twice
+    if (event.playerId === this.localPlayerId) return;
+
+    const bullet = this.bullets.get() as Bullet | null;
+    if (bullet) {
+      bullet.fire(event.x, event.y, event.angle, event.playerId);
     }
   }
 
   /**
    * Apply authoritative game state broadcast from server.
    * Creates/updates/removes remote player sprites.
+   * Performs server reconciliation for local player.
    */
   private applyGameState(state: GameStateEvent): void {
     const players = state.players;
 
+    // Store for scoreboard
+    this.currentPlayers = players;
+
+    // Update player count
+    this.hud.updatePlayerCount(Object.keys(players).length);
+
     Object.entries(players).forEach(([id, ps]: [string, PlayerState]) => {
-      if (id === LOCAL_PLAYER_ID) {
+      if (id === this.localPlayerId) {
         // Update local player health & kills from server
         this.localPlayer.health = ps.health;
         this.localPlayer.kills = ps.kills;
@@ -239,6 +336,23 @@ export class GameScene extends Phaser.Scene {
           this.localPlayer.die();
           // Auto-respawn after 3 seconds
           this.time.delayedCall(3000, () => this.respawn());
+        }
+
+        // Discard acknowledged inputs
+        this.pendingInputs = this.pendingInputs.filter(
+          (input) => input.seq > ps.lastProcessedSeq
+        );
+
+        // Only snap to server position if significantly desynced (> 100px)
+        // This prevents jitter while still correcting major desyncs
+        const dx = ps.x - this.localPlayer.x;
+        const dy = ps.y - this.localPlayer.y;
+        const distSq = dx * dx + dy * dy;
+        const SNAP_THRESHOLD_SQ = 100 * 100; // 100 pixels
+
+        if (distSq > SNAP_THRESHOLD_SQ) {
+          this.localPlayer.setPosition(ps.x, ps.y);
+          this.pendingInputs = []; // Clear pending inputs on hard snap
         }
         return;
       }
@@ -251,6 +365,10 @@ export class GameScene extends Phaser.Scene {
 
       const rp = this.remotePlayers.get(id)!;
       if (ps.alive) {
+        // If remote player was dead but is now alive, respawn them
+        if (!rp.alive) {
+          rp.respawn(ps.x, ps.y);
+        }
         rp.setPosition(ps.x, ps.y);
         rp.setRotation(ps.angle);
         rp.health = ps.health;
@@ -274,6 +392,11 @@ export class GameScene extends Phaser.Scene {
       this.ammo,
       this.localPlayer.kills,
     );
+
+    // Update scoreboard if visible
+    if (this.hud.isScoreboardVisible()) {
+      this.hud.showScoreboard(this.currentPlayers, this.localPlayerId);
+    }
   }
 
   private respawn(): void {
@@ -282,9 +405,12 @@ export class GameScene extends Phaser.Scene {
     this.localPlayer.respawn(x, y);
     this.ammo = this.maxAmmo;
 
+    // Reset prediction state on respawn
+    this.pendingInputs = [];
+
     this.wsClient.send({
       type: 'RESPAWN',
-      playerId: LOCAL_PLAYER_ID,
+      playerId: this.localPlayerId,
       x,
       y,
       timestamp: Date.now(),

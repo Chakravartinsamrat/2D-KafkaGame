@@ -23,6 +23,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.kafka_producer import kafka_producer
+from app.match_service import match_service
 from app.websocket_server import broadcast_loop, handle_player
 
 logging.basicConfig(
@@ -69,6 +70,24 @@ app.add_middleware(
 async def health() -> dict[str, str]:
     """Simple health-check endpoint."""
     return {"status": "ok"}
+
+
+@app.get("/rooms")
+async def list_rooms(include_in_progress: bool = False) -> dict:
+    """List available game rooms."""
+    rooms = match_service.list_rooms(include_in_progress=include_in_progress)
+    return {
+        "rooms": [r.to_dict() for r in rooms],
+    }
+
+
+@app.get("/rooms/{room_id}")
+async def get_room(room_id: str) -> dict:
+    """Get details of a specific room."""
+    room = match_service.get_room(room_id)
+    if not room:
+        return {"error": "Room not found"}
+    return {"room": room.to_dict()}
 
 
 @app.websocket("/ws/{player_id}")

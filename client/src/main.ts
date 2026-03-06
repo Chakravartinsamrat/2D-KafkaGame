@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { MenuScene } from './scenes/MenuScene';
+import { LobbyScene } from './scenes/LobbyScene';
 import { GameScene } from './scenes/GameScene';
 
 // Game configuration
@@ -16,7 +17,7 @@ const config: Phaser.Types.Core.GameConfig = {
       debug: false,
     },
   },
-  scene: [MenuScene, GameScene],
+  scene: [MenuScene, LobbyScene, GameScene],
 };
 
 // Bootstrap the Phaser game

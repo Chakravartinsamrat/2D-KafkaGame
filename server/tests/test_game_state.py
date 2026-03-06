@@ -89,7 +89,8 @@ class TestShootEvent:
         shooter.x = 0.0
         shooter.y = 0.0
 
-        hits = state.apply_shoot(ev)
+        shot_event, hits, kills = state.apply_shoot(ev)
+        assert shot_event is not None
         assert len(hits) == 1
         assert hits[0].targetId == "target"
         assert hits[0].damage == 25
@@ -106,7 +107,8 @@ class TestShootEvent:
         shooter.y = 0.0
 
         ev = ShootEvent(playerId="shooter", x=0.0, y=0.0, angle=0.0, timestamp=_ts())
-        hits = state.apply_shoot(ev)
+        shot_event, hits, kills = state.apply_shoot(ev)
+        assert shot_event is not None
         assert hits == []
 
     def test_shoot_does_not_hit_self(self, state: GameState) -> None:
@@ -117,7 +119,7 @@ class TestShootEvent:
         ps.y = 0.0
 
         ev = ShootEvent(playerId="p1", x=0.0, y=0.0, angle=0.0, timestamp=_ts())
-        hits = state.apply_shoot(ev)
+        shot_event, hits, kills = state.apply_shoot(ev)
         assert all(h.targetId != "p1" for h in hits)
 
 
