@@ -18,6 +18,7 @@ Environment variables:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -72,8 +73,12 @@ class KafkaGameProducer:
                 logger.info("Kafka SASL authentication enabled")
 
             self._producer = AIOKafkaProducer(**config)
-            await self._producer.start()
+            # Timeout after 10s to avoid blocking app startup
+            await asyncio.wait_for(self._producer.start(), timeout=10.0)
             logger.info("Kafka producer connected to %s", KAFKA_BOOTSTRAP)
+        except asyncio.TimeoutError:
+            logger.warning("Kafka connection timed out — running without Kafka.")
+            self._producer = None
         except Exception as exc:  # noqa: BLE001
             logger.warning("Kafka unavailable (%s) — running without Kafka.", exc)
             self._producer = None
