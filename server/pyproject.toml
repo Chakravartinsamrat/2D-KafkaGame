@@ -3,7 +3,7 @@ name = "2d-kafka-game-server"
 version = "0.1.0"
 description = "FastAPI WebSocket game server with Kafka event streaming"
 authors = ["Game Developer"]
-package-mode = false
+packages = [{include = "app"}]
 
 [tool.poetry.dependencies]
 python = "^3.11"
