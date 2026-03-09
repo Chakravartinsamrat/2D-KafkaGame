@@ -85,7 +85,7 @@ export class GameScene extends Phaser.Scene {
 
   preload(): void {
     // Load the map image
-    this.load.image('map', 'assets/Latest map.png');
+    this.load.image('map', '/assets/Latest map.png');
 
     // Load character sprites
     this.loadCharacterSprites();
@@ -95,7 +95,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private loadCharacterSprites(): void {
-    const basePath = 'assets/avatar_sprite';
+    const basePath = '/assets/avatar_sprite';
 
     // Idle frames
     for (let i = 1; i <= 2; i++) {
